@@ -52,9 +52,13 @@ feedback:
    se, just an interesting data point about how this PR's design interacts
    with the broader ecosystem.
 
-Standalone protocol probe I used for debugging is here if useful:
-[gist link / public URL TBD]. The full write-up of the journey is
-at [blog link TBD].
+Full source, write-up, and the standalone protocol probes I used for
+debugging are at
+[mindfulmonk/claude-clipboard-ssh](https://github.com/mindfulmonk/claude-clipboard-ssh).
+
+For anyone who wants to try this PR before it's merged, a ghostty build
+artifact from this branch is available at
+[this CI run](https://github.com/mindfulmonk/ghostty/actions/runs/26341212311).
 
 Excited to see this land. If the unauthenticated-with-prompt path gets
 prioritized, the wrapper pattern goes away and integration gets a lot
