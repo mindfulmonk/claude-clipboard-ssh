@@ -330,8 +330,13 @@ def handle_5522(state, fields, payload, master_fd,
                 log("paste mime decode err:", e)
         elif status == b"DONE":
             log(f"paste event complete; mimes={current_mime_list}")
-            # Pick the preferred MIME to fetch
-            chosen = next((m for m in PREFERRED_MIMES if m in current_mime_list), None)
+            # Pick the preferred MIME to fetch. Match by base type so that
+            # `text/plain;charset=utf-8` matches our `text/plain` entry.
+            def base(m):
+                return m.split(";", 1)[0].strip().lower()
+            advertised_base = {base(m): m for m in current_mime_list}
+            chosen = next((advertised_base[b] for b in (base(p) for p in PREFERRED_MIMES)
+                           if b in advertised_base), None)
             if not chosen:
                 log("no preferred MIME in paste event; synthesizing empty paste")
                 synthesize_paste(master_fd, b"")
