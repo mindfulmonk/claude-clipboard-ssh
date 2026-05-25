@@ -33,7 +33,9 @@ import select
 import shutil
 import signal
 import struct
+import subprocess
 import sys
+import tempfile
 import termios
 import time
 import tty
@@ -185,6 +187,57 @@ def cache_write(by_mime):
         with open(os.path.join(CACHE_DIR, safe), "wb") as f:
             f.write(data)
     open(os.path.join(CACHE_DIR, ".ts"), "wb").close()
+
+
+# ---- macOS clipboard write ----
+# Claude Code on darwin reads images via:
+#   osascript -e 'the clipboard as «class PNGf»'
+# It does NOT shell out to xclip on macOS, so the xclip-shim cache is
+# never consulted. Instead, we load the bytes onto the remote Mac's
+# real NSPasteboard via osascript. Then claude's own osascript read
+# finds the image and the paste works without any darwin-side shim.
+#
+# Side effect: this overwrites whatever was on the remote Mac's
+# clipboard. On a headless/ssh-target box that's almost always fine.
+
+MACOS_CLIPBOARD_FLAVORS = {
+    "image/png":  "«class PNGf»",
+    "image/jpeg": "«class JPEG»",
+    "image/tiff": "«class TIFF»",
+}
+
+
+def load_into_macos_clipboard(data, mime):
+    flavor = MACOS_CLIPBOARD_FLAVORS.get(mime)
+    if not flavor:
+        log(f"macOS clipboard: no flavor mapping for {mime}, skipping")
+        return False
+    try:
+        fd, path = tempfile.mkstemp(prefix="claude-wrap-paste-", suffix=".bin")
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+    except OSError as e:
+        log(f"macOS clipboard: tmpfile err: {e}")
+        return False
+    try:
+        script = f'set the clipboard to (read POSIX file "{path}" as {flavor})'
+        r = subprocess.run(
+            ["osascript", "-e", script],
+            capture_output=True, timeout=3,
+        )
+        if r.returncode != 0:
+            log(f"macOS clipboard: osascript rc={r.returncode} stderr={r.stderr!r}")
+            return False
+        log(f"macOS clipboard: loaded {len(data)} bytes ({mime})")
+        return True
+    except Exception as e:
+        log(f"macOS clipboard: osascript err: {e}")
+        return False
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
 
 
 # ---- main loop with state machine ----
@@ -378,8 +431,12 @@ def handle_5522(state, fields, payload, master_fd,
                 # Text paste: insert the text directly via bracketed paste.
                 synthesize_paste(master_fd, raw)
             else:
-                # Image paste: just send Ctrl+V. Claude's paste shortcut
-                # triggers its xclip flow; the shim serves from cache.
+                # Image paste. On macOS, claude reads the image via
+                # osascript from the real NSPasteboard, so push the bytes
+                # there. On Linux, the xclip shim serves from cache_write
+                # above. Either way, Ctrl+V triggers claude's paste flow.
+                if sys.platform == "darwin":
+                    load_into_macos_clipboard(raw, data_mime)
                 log("synthesizing Ctrl+V")
                 try:
                     os.write(master_fd, b"\x16")

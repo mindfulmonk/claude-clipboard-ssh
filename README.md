@@ -29,11 +29,18 @@ to a `claude` session that's running over SSH.
 ## Install
 
 ```sh
-# Put both on PATH, with the local user prefix
+# Put the wrapper + the clipboard stub for your remote OS on PATH.
 mkdir -p ~/.local/bin
-cp bin/xclip       ~/.local/bin/xclip
 cp bin/claude-wrap ~/.local/bin/claude-wrap
-chmod +x ~/.local/bin/xclip ~/.local/bin/claude-wrap
+chmod +x ~/.local/bin/claude-wrap
+
+# Linux remote:
+cp bin/xclip ~/.local/bin/xclip
+chmod +x ~/.local/bin/xclip
+
+# macOS remote (ssh'ing into a Mac): nothing extra to install.
+# claude-wrap writes pasted images straight to the remote Mac's
+# NSPasteboard via osascript, which is what claude reads on darwin.
 
 # Make sure ~/.local/bin is in PATH and earlier than any system xclip
 echo $PATH | tr ':' '\n' | head -3
