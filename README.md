@@ -44,6 +44,13 @@ chmod +x ~/.local/bin/xclip
 
 # Make sure ~/.local/bin is in PATH and earlier than any system xclip
 echo $PATH | tr ':' '\n' | head -3
+
+# Using tmux on the remote? Also install the tmux wrapper:
+cp bin/tmux-wrap ~/.local/bin/tmux-wrap
+chmod +x ~/.local/bin/tmux-wrap
+# Using herdr instead? Same script, installed under the herdr-wrap name:
+cp bin/tmux-wrap ~/.local/bin/herdr-wrap
+chmod +x ~/.local/bin/herdr-wrap
 ```
 
 Optional, but recommended: silence the kitty clipboard popup. In
@@ -75,6 +82,44 @@ alias claude=claude-wrap
 ```
 
 Paste a screenshot the same way you would locally. It attaches.
+
+### Inside tmux
+
+`claude-wrap` can't bridge from *inside* tmux: ghostty's OSC 5522 paste
+packets are unsolicited terminal output, and tmux's input parser doesn't
+understand them, so it drops them before the wrapper can see them. There's
+no inbound equivalent of `allow-passthrough` to fix this.
+
+So launch tmux through `tmux-wrap` instead. It runs the same OSC 5522 bridge
+one level up — between ghostty and tmux — where the paste packets still
+exist:
+
+```sh
+tmux-wrap                  # instead of `tmux`
+tmux-wrap new -s work      # any normal tmux args pass through
+```
+
+Inside the session, run `claude` (or `claude-wrap` — it detects it's inside
+tmux and transparently `exec`s real `claude`; the alias stays safe). Paste
+normally. `tmux-wrap` captures the clipboard, writes the same cache, and
+injects Ctrl+V into the focused pane so Claude's paste flow fires.
+
+On a **macOS** remote that's all you need: `tmux-wrap` pushes the image to
+NSPasteboard and Claude reads it directly, so plain `claude` works with no
+`claude-wrap` involved. On a **Linux** remote you still need the `bin/xclip`
+stub installed — Claude shells out to `xclip` there, and the stub is what
+serves the cache `tmux-wrap` wrote.
+
+**herdr** has the same problem and the same fix: launch it as `herdr-wrap`
+(any herdr args pass through, e.g. `herdr-wrap --session work`). Detaching and
+re-attaching works — just always attach via `herdr-wrap`. If you instead run
+herdr on your *local* machine with `herdr --remote <host>`, herdr's own
+`remote_image_paste` handles images and you don't need this repo at all.
+
+Caveats: the injected Ctrl+V goes to whatever pane is focused (paste only
+when Claude has focus). Running `tmux-wrap` while already inside tmux, or in
+a non-ghostty/kitty terminal, just `exec`s plain tmux. No `allow-passthrough`
+config is needed — tmux sits *below* the bridge.
 
 ## Architecture
 
@@ -137,8 +182,11 @@ to a direct `exec` of `claude` on terminals that don't.
 - **One MIME per paste in ghostty.** ghostty's password is single-use, so
   the wrapper fetches exactly one MIME (PNG preferred). If your clipboard
   has both an image and a URL, only the image comes through.
-- **No tmux/screen support.** OSC 5522 won't pass through a multiplexer's
-  byte filter by default. The wrapper would need different routing.
+- **tmux/herdr need `tmux-wrap`/`herdr-wrap`, not `claude-wrap`.** OSC 5522 paste packets
+  don't survive tmux's input filter, so a bridge inside tmux is blind to
+  them. Launch tmux via `tmux-wrap` (see [Inside tmux](#inside-tmux)), which
+  runs the bridge above tmux. `screen` is untested but should work the same
+  way if wrapped equivalently.
 - **Keystrokes typed during the OSC round-trip can be eaten** in some
   edge cases involving slow clipboard popups. Set `clipboard_control` to
   drop the `-ask` modifier to minimize the window.
@@ -153,6 +201,9 @@ In `tools/`:
   a file. No proxy, no claude. Reproduces the protocol in isolation.
 - `dump-paste.py` — dumps every byte the terminal sends on a paste. Useful
   for figuring out what trigger a TUI app actually expects.
+- `tmux-probe.py` — enables mode 5522 (auto-wrapping in tmux passthrough when
+  `$TMUX` is set) and captures a paste, to test whether OSC 5522 survives a
+  given multiplexer round-trip. Run with and without tmux to compare.
 
 ## Why
 
