@@ -162,9 +162,7 @@ wrapper. See `BLOG.md` for the longer write-up.
 Tested with:
 
 - macOS host running kitty (latest)
-- macOS host running ghostty with
-  [PR #12030](https://github.com/ghostty-org/ghostty/pull/12030) (OSC 5522
-  read-path support; not yet merged at time of writing)
+- macOS host running ghostty 1.4+ (OSC 5522 shipped in 1.4)
 - Linux remote (Arch) running Claude Code over SSH
 
 Should work with any terminal that implements OSC 5522. Falls back gracefully
@@ -190,6 +188,20 @@ to a direct `exec` of `claude` on terminals that don't.
 - **Keystrokes typed during the OSC round-trip can be eaten** in some
   edge cases involving slow clipboard popups. Set `clipboard_control` to
   drop the `-ask` modifier to minimize the window.
+
+## Debug logging
+
+Off by default. To trace a paste, set `CLAUDE_WRAP_DEBUG=1` before launching
+the wrapper:
+
+```sh
+CLAUDE_WRAP_DEBUG=1 claude-wrap      # or tmux-wrap / herdr-wrap
+```
+
+Logs go to `~/.local/state/` (`claude-wrap.log`, `tmux-wrap.log` — also used
+by herdr-wrap — and `xclip-shim.log`), readable only by you. They record
+packet headers, MIME types and sizes — never clipboard contents or the
+one-time paste password. Delete them when you're done.
 
 ## Debug tools
 

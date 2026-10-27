@@ -34,10 +34,20 @@ LOG_PATH = os.path.join(
 )
 
 
+# Logging is off unless CLAUDE_WRAP_DEBUG=1. The log reveals when you
+# paste and what kind of data it was, so only write it when debugging,
+# and only readable by you.
+DEBUG = os.environ.get("CLAUDE_WRAP_DEBUG") == "1"
+
+
 def log(*args):
+    if not DEBUG:
+        return
     try:
-        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-        with open(LOG_PATH, "a") as f:
+        os.makedirs(os.path.dirname(LOG_PATH), mode=0o700, exist_ok=True)
+        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(fd, 0o600)  # tighten a log left over from older versions
+        with os.fdopen(fd, "a") as f:
             f.write(f"[{time.strftime('%H:%M:%S')} pid={os.getpid()}] "
                     + " ".join(str(a) for a in args) + "\n")
     except Exception:

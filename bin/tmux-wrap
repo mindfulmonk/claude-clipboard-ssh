@@ -33,7 +33,7 @@ So: launch `tmux-wrap` instead of `tmux` (or `herdr-wrap` instead of
 `herdr`). Inside, run `claude` (or `claude-wrap`, which harmlessly exec's
 claude once it sees it can't bridge from inside the multiplexer). Paste with your normal shortcut.
 
-Debug log: $XDG_STATE_HOME/tmux-wrap.log
+Debug log (only with CLAUDE_WRAP_DEBUG=1): $XDG_STATE_HOME/tmux-wrap.log
 """
 import base64
 import errno
@@ -65,10 +65,20 @@ PREFERRED_MIMES = [
 DATA_RESPONSE_TIMEOUT = 5.0   # seconds; ghostty's password expires at 5s
 
 
+# Logging is off unless CLAUDE_WRAP_DEBUG=1. The log reveals when you
+# paste and what kind of data it was, so only write it when debugging,
+# and only readable by you.
+DEBUG = os.environ.get("CLAUDE_WRAP_DEBUG") == "1"
+
+
 def log(*args):
+    if not DEBUG:
+        return
     try:
-        os.makedirs(os.path.dirname(LOG_PATH), exist_ok=True)
-        with open(LOG_PATH, "a") as f:
+        os.makedirs(os.path.dirname(LOG_PATH), mode=0o700, exist_ok=True)
+        fd = os.open(LOG_PATH, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        os.fchmod(fd, 0o600)  # tighten a log left over from older versions
+        with os.fdopen(fd, "a") as f:
             f.write(f"[{time.strftime('%H:%M:%S')} pid={os.getpid()}] "
                     + " ".join(str(a) for a in args) + "\n")
     except Exception:
@@ -340,14 +350,16 @@ def handle_5522(state, fields, payload, master_fd,
                 current_password, current_mime_list,
                 request_deadline, data_buf, data_mime):
     status = fields.get(b"status", b"")
-    log(f"5522 packet: state={state} status={status!r} fields={fields}")
+    # Never log the one-time paste password.
+    safe = {k: v for k, v in fields.items() if k != b"pw"}
+    log(f"5522 packet: state={state} status={status!r} fields={safe}")
 
     # --- IDLE: looking for a paste event ---
-    # Ghostty sends status=OK with a `password` field.
+    # Ghostty sends status=OK with a `pw` field (one-time password, base64).
     # Kitty sends status=OK without a password (no authentication).
     if state == STATE_IDLE:
         if status == b"OK":
-            current_password = fields.get(b"password")   # None for kitty
+            current_password = fields.get(b"pw")   # None for kitty
             current_mime_list = []
             log(f"paste event start; password={'yes' if current_password else 'no (kitty)'}")
             return (STATE_COLLECTING_PASTE, current_password, current_mime_list,
@@ -358,9 +370,15 @@ def handle_5522(state, fields, payload, master_fd,
     # --- COLLECTING_PASTE: accumulate advertised MIME types ---
     if state == STATE_COLLECTING_PASTE:
         if status == b"DATA" and b"mime" in fields:
+            # The listing arrives as mime="." (targets) with the available
+            # MIME types as a base64, whitespace-separated payload.
             try:
                 mime = base64.b64decode(fields[b"mime"]).decode("ascii", "replace")
-                current_mime_list.append(mime)
+                if mime == "." and payload:
+                    listing = base64.b64decode(payload).decode("utf-8", "replace")
+                    current_mime_list.extend(listing.split())
+                elif mime != ".":
+                    current_mime_list.append(mime)
             except Exception as e:
                 log("paste mime decode err:", e)
         elif status == b"DONE":
@@ -390,15 +408,16 @@ def handle_5522(state, fields, payload, master_fd,
             return (state, current_password, current_mime_list,
                     request_deadline, data_buf, data_mime)
         if status == b"DATA" and payload:
-            data_buf.extend(payload)
+            # Each chunk is independently base64-encoded (padded), so
+            # decode per chunk; concatenating first breaks on mid-stream '='.
+            try:
+                data_buf.extend(base64.b64decode(payload))
+            except Exception as e:
+                log("data chunk b64 decode err:", e)
             return (state, current_password, current_mime_list,
                     request_deadline, data_buf, data_mime)
         if status == b"DONE":
-            try:
-                raw = base64.b64decode(bytes(data_buf))
-            except Exception as e:
-                log("data b64 decode err:", e)
-                raw = b""
+            raw = bytes(data_buf)
             log(f"data response complete: {len(raw)} bytes for {data_mime}")
             # Stash in cache for the xclip shim to find
             try:
@@ -429,13 +448,14 @@ def handle_5522(state, fields, payload, master_fd,
 
 
 def send_read_request(mime, password_b64):
-    """Send OSC 5522 read up to ghostty. Ghostty needs password; kitty doesn't."""
-    mime_b64 = base64.b64encode(mime.encode()).decode("ascii")
+    """Send OSC 5522 read. The MIME list goes in the payload. Ghostty needs
+    the paste event's pw echoed back plus a name= (per spec a pw without a
+    name is ignored, which would fall back to a permission prompt)."""
+    mime_b64 = base64.b64encode(mime.encode())
+    meta = b"type=read"
     if password_b64:
-        seq = (b"\x1b]5522;type=read:mime=" + mime_b64.encode()
-               + b":password=" + password_b64 + b"\x1b\\")
-    else:
-        seq = (b"\x1b]5522;type=read;" + mime_b64.encode() + b"\x1b\\")
+        meta += b":pw=" + password_b64 + b":name=" + base64.b64encode(b"claude-wrap")
+    seq = b"\x1b]5522;" + meta + b";" + mime_b64 + b"\x1b\\"
     try:
         os.write(1, seq)
     except OSError:
